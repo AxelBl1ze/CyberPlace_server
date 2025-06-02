@@ -4,66 +4,77 @@ import cron from 'node-cron';
 const router = express.Router();
 
 // 2. Временная блокировка места
-router.post('/reserve', (req, res) => {
+router.post('/reserve', async (req, res) => {
     const { placeId, userId, startTime, duration } = req.body;
     
-    // 1. Находим клуб по месту
-    db.query('SELECT club_id FROM game_place WHERE id = ?', [placeId], (err, clubResults) => {
-        if (err) {
-            console.error('Ошибка при поиске клуба:', err);
-            return res.status(500).json({ error: 'Ошибка сервера' });
-        }
+    try {
+        // 1. Находим клуб и админа
+        const [clubResults] = await db.promise().query(
+            'SELECT club_id FROM game_place WHERE id = ?', 
+            [placeId]
+        );
         
         if (clubResults.length === 0) {
             return res.status(404).json({ error: 'Место не найдено' });
         }
         
         const clubId = clubResults[0].club_id;
-        
-        // 2. Находим админа клуба
-        db.query('SELECT id FROM admin WHERE club_id = ? LIMIT 1', [clubId], (err, adminResults) => {
-            if (err) {
-                console.error('Ошибка при поиске админа:', err);
-                return res.status(500).json({ error: 'Ошибка сервера' });
+        const [adminResults] = await db.promise().query(
+            'SELECT id FROM admin WHERE club_id = ? LIMIT 1', 
+            [clubId]
+        );
+        const adminId = adminResults[0]?.id || null;
+
+        // 2. Начинаем транзакцию
+        const connection = await db.promise().getConnection();
+        await connection.beginTransaction();
+
+        try {
+            // 3. Проверяем пересечение временных интервалов (блокирующий запрос)
+            const [existing] = await connection.query(`
+                SELECT id 
+                FROM booking 
+                WHERE 
+                    game_place_id = ? 
+                    AND status = 'active'
+                    AND NOT (
+                        ADDTIME(start_time, SEC_TO_TIME(duration_minutes * 60)) <= ?
+                        OR start_time >= ADDTIME(?, SEC_TO_TIME(? * 60))
+                    )
+                FOR UPDATE
+            `, [placeId, startTime, startTime, duration]);
+
+            if (existing.length > 0) {
+                await connection.rollback();
+                return res.status(400).json({ error: 'Место уже забронировано' });
             }
+
+            // 4. Создаем бронь
+            const [result] = await connection.query(`
+                INSERT INTO booking 
+                (user_id, admin_id, game_place_id, start_time, duration_minutes, status) 
+                VALUES (?, ?, ?, ?, ?, 'active')
+            `, [userId, adminId, placeId, startTime, duration]);
+
+            // 5. Фиксируем транзакцию
+            await connection.commit();
             
-            const adminId = adminResults.length > 0 ? adminResults[0].id : null;
+            const bookingId = result.insertId;
+            setTimeout(() => {
+                db.query('DELETE FROM booking WHERE id = ? AND status = "active"', [bookingId]);
+            }, 5 * 60 * 1000);
+
+            return res.json({ bookingId });
             
-            // 3. Проверяем доступность места
-            db.query(
-                'SELECT * FROM booking WHERE game_place_id = ? AND status IN ("active")',
-                [placeId],
-                (err, results) => {
-                    if (err) return res.status(500).json({ error: 'Ошибка сервера' });
-                    if (results.length > 0) {
-                        return res.status(400).json({ error: 'Место уже забронировано' });
-                    }
-                    
-                    // 4. Создаем бронь с adminId
-                    db.query(
-                        `INSERT INTO booking 
-                        (user_id, admin_id, game_place_id, start_time, duration_minutes, status) 
-                        VALUES (?, ?, ?, ?, ?, 'active')`,
-                        [userId, adminId, placeId, startTime, duration],
-                        (err, result) => {
-                            if (err) {
-                                console.error('Ошибка бронирования:', err);
-                                return res.status(500).json({ error: 'Ошибка бронирования' });
-                            }
-                            
-                            const bookingId = result.insertId;
-                            // Устанавливаем таймер на 5 минут для отмены
-                            setTimeout(() => {
-                                db.query('DELETE FROM booking WHERE id = ? AND status = "active"', [bookingId]);
-                            }, 5 * 60 * 1000);
-                            
-                            res.json({ bookingId });
-                        }
-                    );
-                }
-            );
-        });
-    });
+        } catch (err) {
+            await connection.rollback();
+            console.error('Ошибка транзакции:', err);
+            return res.status(500).json({ error: 'Ошибка бронирования' });
+        }
+    } catch (err) {
+        console.error('Ошибка сервера:', err);
+        return res.status(500).json({ error: 'Ошибка сервера' });
+    }
 });
 
 // Эндпоинт для получения бронирований пользователя
