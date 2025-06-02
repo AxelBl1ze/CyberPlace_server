@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import db from './db.js';
+import dotenv from 'dotenv';
 import userRouter from "./routes/user.js";
 import adminRouter from "./routes/admin.js";
 import clubRouter from "./routes/clubs.js";
@@ -8,7 +9,7 @@ import gamesRouter from "./routes/games.js";
 import tariffsRouter from "./routes/tariffs.js";
 import bookingsRouter from "./routes/bookings.js";
 import paymentRouter from "./routes/payment.js";
-
+dotenv.config();
 const app = express();
 const PORT = 3000;
 
