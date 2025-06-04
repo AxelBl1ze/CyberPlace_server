@@ -253,21 +253,31 @@ router.post('/:bookingId/cancel', (req, res) => {
 
 
 cron.schedule('* * * * *', () => {
-    const selectQuery = `
-        SELECT id FROM booking 
-        WHERE status = 'active' AND DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) < NOW()
+    const debugQuery = `
+        SELECT id, start_time, duration_minutes, 
+               DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) AS end_time,
+               NOW()
+        FROM booking
+        WHERE status = 'active'
     `;
 
-    db.query(selectQuery, (err, rows) => {
+    db.query(debugQuery, (err, rows) => {
         if (err) {
-            console.error('Ошибка выборки бронирований для завершения:', err);
+            console.error('[DEBUG] Ошибка запроса активных броней:', err);
             return;
         }
 
-        if (rows.length > 0) {
-            console.log(`Брони для завершения: ${rows.map(r => r.id).join(', ')}`);
+        console.log('[DEBUG] Активные брони:');
+        rows.forEach(r => {
+            console.log(`ID: ${r.id}, end: ${r.end_time}, now: ${r['NOW()']}`);
+        });
 
-            const ids = rows.map(r => r.id);
+        const idsToComplete = rows
+            .filter(r => new Date(r.end_time) < new Date())
+            .map(r => r.id);
+
+        if (idsToComplete.length > 0) {
+            console.log(`[CRON] Завершаются брони: ${idsToComplete.join(', ')}`);
 
             const updateQuery = `
                 UPDATE booking 
@@ -275,18 +285,17 @@ cron.schedule('* * * * *', () => {
                 WHERE id IN (?)
             `;
 
-            db.query(updateQuery, [ids], (err, result) => {
+            db.query(updateQuery, [idsToComplete], (err, result) => {
                 if (err) {
-                    console.error('Ошибка завершения бронирований:', err);
+                    console.error('[CRON] Ошибка завершения броней:', err);
                 } else {
-                    console.log(`Завершено бронирований: ${result.affectedRows}`);
+                    console.log(`[CRON] Завершено броней: ${result.affectedRows}`);
                 }
             });
         } else {
-            console.log('Нет броней для завершения');
+            console.log('[CRON] Нет броней для завершения');
         }
     });
 });
-
 
 export default router;
