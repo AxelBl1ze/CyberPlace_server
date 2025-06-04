@@ -250,50 +250,23 @@ router.post('/:bookingId/cancel', (req, res) => {
     );
 });
 
-
-
 cron.schedule('* * * * *', () => {
-    const debugQuery = `
-        SELECT id, start_time, duration_minutes, 
-               DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) AS end_time,
-               NOW()
-        FROM booking
+    const query = `
+        UPDATE booking 
+        SET status = 'completed'
         WHERE status = 'active'
+        AND DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) <= UTC_TIMESTAMP()
     `;
 
-    db.query(debugQuery, (err, rows) => {
+    db.query(query, (err, result) => {
         if (err) {
-            console.error('[DEBUG] Ошибка запроса активных броней:', err);
-            return;
-        }
-
-        console.log('[DEBUG] Активные брони:');
-        rows.forEach(r => {
-            console.log(`ID: ${r.id}, end: ${r.end_time}, now: ${r['NOW()']}`);
-        });
-
-        const idsToComplete = rows
-            .filter(r => new Date(r.end_time) < new Date())
-            .map(r => r.id);
-
-        if (idsToComplete.length > 0) {
-            console.log(`[CRON] Завершаются брони: ${idsToComplete.join(', ')}`);
-
-            const updateQuery = `
-                UPDATE booking 
-                SET status = 'completed'
-                WHERE id IN (?)
-            `;
-
-            db.query(updateQuery, [idsToComplete], (err, result) => {
-                if (err) {
-                    console.error('[CRON] Ошибка завершения броней:', err);
-                } else {
-                    console.log(`[CRON] Завершено броней: ${result.affectedRows}`);
-                }
-            });
+            console.error('[CRON] Ошибка завершения броней:', err);
         } else {
-            console.log('[CRON] Нет броней для завершения');
+            if (result.affectedRows > 0) {
+                console.log(`[CRON] Завершено броней: ${result.affectedRows}`);
+            } else {
+                console.log('[CRON] Нет броней для завершения');
+            }
         }
     });
 });
