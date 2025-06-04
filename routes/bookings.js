@@ -251,23 +251,68 @@ router.post('/:bookingId/cancel', (req, res) => {
 });
 
 cron.schedule('* * * * *', () => {
-    const query = `
-        UPDATE booking 
-        SET status = 'completed'
+    console.log('\n[CRON] Проверка завершения бронирований...');
+
+    const selectQuery = `
+        SELECT id, start_time, duration_minutes, 
+               DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) AS end_time, 
+               UTC_TIMESTAMP() as now
+        FROM booking
         WHERE status = 'active'
-        AND DATE_ADD(start_time, INTERVAL duration_minutes MINUTE) <= UTC_TIMESTAMP()
     `;
 
-    db.query(query, (err, result) => {
+    db.query(selectQuery, (err, rows) => {
         if (err) {
-            console.error('[CRON] Ошибка завершения броней:', err);
-        } else {
-            if (result.affectedRows > 0) {
-                console.log(`[CRON] Завершено броней: ${result.affectedRows}`);
-            } else {
-                console.log('[CRON] Нет броней для завершения');
+            console.error('[CRON] Ошибка выборки:', err);
+            return;
+        }
+
+        if (rows.length === 0) {
+            console.log('[CRON] Нет активных броней');
+            return;
+        }
+
+        console.log(`[CRON] Найдено ${rows.length} активных броней:`);
+
+        const idsToUpdate = [];
+
+        for (const row of rows) {
+            const end = new Date(row.end_time);
+            const now = new Date(row.now);
+
+            const debugInfo = `
+[DEBUG] ID: ${row.id}
+  start_time:  ${row.start_time}
+  duration:    ${row.duration_minutes} мин
+  end_time:    ${end.toISOString()}
+  now (UTC):   ${now.toISOString()}
+`;
+
+            console.log(debugInfo);
+
+            if (end <= now) {
+                idsToUpdate.push(row.id);
             }
         }
+
+        if (idsToUpdate.length === 0) {
+            console.log('[CRON] Нет броней для завершения');
+            return;
+        }
+
+        const updateQuery = `
+            UPDATE booking 
+            SET status = 'completed'
+            WHERE id IN (?)
+        `;
+
+        db.query(updateQuery, [idsToUpdate], (err, result) => {
+            if (err) {
+                console.error('[CRON] Ошибка обновления:', err);
+            } else {
+                console.log(`[CRON] Завершено ${result.affectedRows} бронирований (ID: ${idsToUpdate.join(', ')})`);
+            }
+        });
     });
 });
 
